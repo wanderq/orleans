@@ -1,36 +1,18 @@
-/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Security.Principal;
-
+using Microsoft.Extensions.Logging;
+using Orleans.ApplicationParts;
+using Orleans.Hosting;
+using Orleans.Logging;
+using Orleans.Metadata;
 using Orleans.Runtime;
-using Orleans.Runtime.Counters;
 using Orleans.Runtime.Configuration;
-
+using OrleansTelemetryConsumers.Counters;
 
 namespace Orleans.Counter.Control
 {
@@ -44,20 +26,33 @@ namespace Orleans.Counter.Control
         public bool NeedRunAsAdministrator { get; private set; }
         public bool IsRunningAsAdministrator { get; private set; }
         public bool PauseAtEnd { get; private set; }
+        private readonly ILogger logger;
+        private static OrleansPerfCounterTelemetryConsumer perfCounterConsumer;
 
-        public CounterControl()
+        public CounterControl(ILoggerFactory loggerFactory)
         {
             // Check user is Administrator and has granted UAC elevation permission to run this app
             var userIdent = WindowsIdentity.GetCurrent();
             var userPrincipal = new WindowsPrincipal(userIdent);
             IsRunningAsAdministrator = userPrincipal.IsInRole(WindowsBuiltInRole.Administrator);
+
+            var parts = new ApplicationPartManager();
+            parts.AddFromAppDomain()
+                .AddFromApplicationBaseDirectory()
+                .AddFeatureProvider(new AssemblyAttributeFeatureProvider<GrainClassFeature>());
+            var grainClassFeature = parts.CreateAndPopulateFeature<GrainClassFeature>();
+
+            CrashUtils.GrainTypes = grainClassFeature.Classes.Select(metadata => TypeUtils.GetFullName(metadata.ClassType)).ToList();
+
+            perfCounterConsumer = new OrleansPerfCounterTelemetryConsumer(loggerFactory);
+            this.logger = loggerFactory.CreateLogger<CounterControl>();
         }
 
         public void PrintUsage()
         {
             using (var usageStr = new StringWriter())
             {
-                usageStr.WriteLine(Assembly.GetExecutingAssembly().GetName().Name + ".exe {command}");
+                usageStr.WriteLine(typeof(CounterControl).GetTypeInfo().Assembly.GetName().Name + ".exe {command}");
                 usageStr.WriteLine("Where commands are:");
                 usageStr.WriteLine(" /? or /help       = Display usage info");
                 usageStr.WriteLine(" /r or /register   = Register Windows performance counters for Orleans [default]");
@@ -126,16 +121,14 @@ namespace Orleans.Counter.Control
                 return 1;
             }
 
-            InitConsoleLogging();
-
             try
             {
-                if (Unregister) 
+                if (Unregister)
                 {
                     ConsoleText.WriteStatus("Unregistering Orleans performance counters with Windows");
                     UnregisterWindowsPerfCounters(this.BruteForce);
                 }
-                else 
+                else
                 {
                     ConsoleText.WriteStatus("Registering Orleans performance counters with Windows");
                     RegisterWindowsPerfCounters(true); // Always reinitialize counter registrations, even if already existed
@@ -144,9 +137,9 @@ namespace Orleans.Counter.Control
                 ConsoleText.WriteStatus("Operation completed successfully.");
                 return 0;
             }
-            catch (Exception exc) 
+            catch (Exception exc)
             {
-                ConsoleText.WriteError("Error running " + Assembly.GetExecutingAssembly().GetName().Name + ".exe", exc);
+                ConsoleText.WriteError("Error running " + typeof(CounterControl).GetTypeInfo().Assembly.GetName().Name + ".exe", exc);
 
                 if (!BruteForce) return 2;
 
@@ -156,15 +149,21 @@ namespace Orleans.Counter.Control
         }
 
         /// <summary>
-        /// Initialize log infrastrtucture for Orleans runtime sub-components
+        /// Initialize log infrastructure for Orleans runtime sub-components
         /// </summary>
-        private static void InitConsoleLogging()
+        internal static ILoggerFactory InitDefaultLogging()
         {
             Trace.Listeners.Clear();
-            var cfg = new NodeConfiguration {TraceFilePattern = null, TraceToConsole = false};
-            TraceLogger.Initialize(cfg);
-            var logWriter = new LogWriterToConsole(true, true); // Use compact console output & no timestamps / log message metadata
-            TraceLogger.LogConsumers.Add(logWriter);
+            return CreateDefaultLoggerFactory("CounterControl.log");
+        }
+
+        private static ILoggerFactory CreateDefaultLoggerFactory(string filePath)
+        {
+            var factory = new LoggerFactory();
+            factory.AddProvider(new FileLoggerProvider(filePath));
+            if (ConsoleText.IsConsoleAvailable)
+                factory.AddConsole();
+            return factory;
         }
 
         /// <summary>
@@ -172,11 +171,11 @@ namespace Orleans.Counter.Control
         /// </summary>
         /// <param name="useBruteForce">Use brute force, if necessary</param>
         /// <remarks>Note: Program needs to be running as Administrator to be able to register Windows perf counters.</remarks>
-        private static void RegisterWindowsPerfCounters(bool useBruteForce)
+        private void RegisterWindowsPerfCounters(bool useBruteForce)
         {
-            try 
+            try
             {
-                if (OrleansPerfCounterManager.AreWindowsPerfCountersAvailable())
+                if (OrleansPerfCounterTelemetryConsumer.AreWindowsPerfCountersAvailable(this.logger))
                 {
                     if (!useBruteForce)
                     {
@@ -188,15 +187,10 @@ namespace Orleans.Counter.Control
                     UnregisterWindowsPerfCounters(true);
                 }
 
-                if (GrainTypeManager.Instance == null)
-                {
-                    var typeManager = new GrainTypeManager(false, null); // We shouldn't need GrainFactory in this case
-                    GrainTypeManager.Instance.Start(false);
-                }
                 // Register perf counters
-                OrleansPerfCounterManager.InstallCounters();
+                perfCounterConsumer.InstallCounters();
 
-                if (OrleansPerfCounterManager.AreWindowsPerfCountersAvailable()) 
+                if (OrleansPerfCounterTelemetryConsumer.AreWindowsPerfCountersAvailable(this.logger))
                     ConsoleText.WriteStatus("Orleans counters registered successfully");
                 else
                     ConsoleText.WriteError("Orleans counters are NOT registered");
@@ -213,18 +207,18 @@ namespace Orleans.Counter.Control
         /// </summary>
         /// <param name="useBruteForce">Use brute force, if necessary</param>
         /// <remarks>Note: Program needs to be running as Administrator to be able to unregister Windows perf counters.</remarks>
-        private static void UnregisterWindowsPerfCounters(bool useBruteForce)
+        private void UnregisterWindowsPerfCounters(bool useBruteForce)
         {
-            if (!OrleansPerfCounterManager.AreWindowsPerfCountersAvailable())
+            if (!OrleansPerfCounterTelemetryConsumer.AreWindowsPerfCountersAvailable(this.logger))
             {
                 ConsoleText.WriteStatus("Orleans counters are already unregistered");
                 return;
             }
-            
+
             // Delete any old perf counters
             try
             {
-                OrleansPerfCounterManager.DeleteCounters();
+                perfCounterConsumer.DeleteCounters();
             }
             catch (Exception exc)
             {

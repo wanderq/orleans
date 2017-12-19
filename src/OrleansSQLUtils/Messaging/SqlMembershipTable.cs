@@ -1,58 +1,36 @@
-﻿/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
-using Orleans.Messaging;
-using Orleans.Runtime.Configuration;
 using System;
-using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Orleans.Runtime.Configuration;
 using Orleans.SqlUtils;
-using Orleans.SqlUtils.Management;
-
+using OrleansSQLUtils.Configuration;
 
 namespace Orleans.Runtime.MembershipService
-{
-    internal class SqlMembershipTable: IMembershipTable, IGatewayListProvider
+{ 
+    public class SqlMembershipTable: IMembershipTable
     {
-        private string deploymentId;        
-        private TimeSpan maxStaleness;
-        private TraceLogger logger;
-        private IRelationalStorage database;
-        private QueryConstantsBag queryConstants;
-
-        public async Task InitializeMembershipTable(GlobalConfiguration config, bool tryInitTableVersion, TraceLogger traceLogger)
+        private readonly IGrainReferenceConverter grainReferenceConverter;
+        private string clusterId;        
+        private ILogger logger;
+        private RelationalOrleansQueries orleansQueries;
+        private readonly SqlMembershipOptions membershipTableOptions;
+        public SqlMembershipTable(IGrainReferenceConverter grainReferenceConverter, IOptions<SiloOptions> siloOptions, IOptions<SqlMembershipOptions> membershipTableoptions, ILogger<SqlMembershipTable> logger)
         {
-            logger = traceLogger;
-            deploymentId = config.DeploymentId;
+            this.grainReferenceConverter = grainReferenceConverter;
+            this.logger = logger;
+            this.membershipTableOptions = membershipTableoptions.Value;
+            this.clusterId = siloOptions.Value.ClusterId;
+        }
 
-            if (logger.IsVerbose3) logger.Verbose3("SqlMembershipTable.InitializeMembershipTable called.");
-
-            database = RelationalStorageUtilities.CreateGenericStorageInstance(config.AdoInvariant, config.DataConnectionString);
+        public async Task InitializeMembershipTable(bool tryInitTableVersion)
+        {
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("SqlMembershipTable.InitializeMembershipTable called.");
 
             //This initializes all of Orleans operational queries from the database using a well known view
-            //and assumes the database with appropriate defintions exists already.
-            queryConstants = await database.InitializeOrleansQueriesAsync();
-
+            //and assumes the database with appropriate definitions exists already.
+            orleansQueries = await RelationalOrleansQueries.CreateInstance(membershipTableOptions.AdoInvariant, membershipTableOptions.ConnectionString, this.grainReferenceConverter);
+            
             // even if I am not the one who created the table, 
             // try to insert an initial table version if it is not already there,
             // so we always have a first table version row, before this silo starts working.
@@ -67,85 +45,39 @@ namespace Orleans.Runtime.MembershipService
         }
 
 
-        public async Task InitializeGatewayListProvider(ClientConfiguration config, TraceLogger traceLogger)
+        public async Task<MembershipTableData> ReadRow(SiloAddress key)
         {
-            logger = traceLogger;
-            if (logger.IsVerbose3) logger.Verbose3("SqlMembershipTable.InitializeGatewayListProvider called.");
-
-            deploymentId = config.DeploymentId;            
-            maxStaleness = config.GatewayListRefreshPeriod;
-            database = RelationalStorageUtilities.CreateGenericStorageInstance(config.AdoInvariant, config.DataConnectionString);
-
-            //This initializes all of Orleans operational queries from the database using a well known view
-            //and assumes the database with appropriate defintions exists already.
-            queryConstants = await database.InitializeOrleansQueriesAsync();
-        }
-
-
-        public TimeSpan MaxStaleness
-        {
-            get { return maxStaleness; }
-        }
-
-
-        public bool IsUpdatable
-        {
-            get { return true; }
-        }
-
-
-        public IList<Uri> GetGateways()
-        {
-            if (logger.IsVerbose3) logger.Verbose3("SqlMembershipTable.GetGateways called.");
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace(string.Format("SqlMembershipTable.ReadRow called with key: {0}.", key));
             try
             {
-                //TODO: Refactor this to async.
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.ActiveGatewaysQuery);
-                return database.ActiveGatewaysAsync(query, deploymentId).Result;
+                return await orleansQueries.MembershipReadRowAsync(this.clusterId, key);                
             }
             catch(Exception ex)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.Gateways failed {0}", ex);
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.ReadRow failed: {0}", ex);
                 throw;
             }
         }
 
 
-        Task<MembershipTableData> IMembershipTable.ReadRow(SiloAddress key)
+        public async Task<MembershipTableData> ReadAll()
         {
-            if (logger.IsVerbose3) logger.Verbose3(string.Format("SqlMembershipTable.ReadRow called with key: {0}.", key));
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("SqlMembershipTable.ReadAll called.");
             try
             {
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.MembershipReadRowKey);
-                return database.MembershipDataAsync(query, deploymentId, key);                
+                return await orleansQueries.MembershipReadAllAsync(this.clusterId);                
             }
             catch(Exception ex)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.ReadRow failed: {0}", ex);
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.ReadAll failed: {0}", ex);
                 throw;
             }
         }
 
 
-        Task<MembershipTableData> IMembershipTable.ReadAll()
+        public async Task<bool> InsertRow(MembershipEntry entry, TableVersion tableVersion)
         {
-            if (logger.IsVerbose3) logger.Verbose3("SqlMembershipTable.ReadAll called.");
-            try
-            {
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.MembershipReadAllKey);
-                return database.AllMembershipDataAsync(query, deploymentId);                
-            }
-            catch(Exception ex)
-            {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.ReadAll failed: {0}", ex);
-                throw;
-            }
-        }
-
-
-        Task<bool> IMembershipTable.InsertRow(MembershipEntry entry, TableVersion tableVersion)
-        {
-            if (logger.IsVerbose3) logger.Verbose3(string.Format("SqlMembershipTable.InsertRow called with entry {0} and tableVersion {1}.", entry, tableVersion));
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace(string.Format("SqlMembershipTable.InsertRow called with entry {0} and tableVersion {1}.", entry, tableVersion));
 
             //The "tableVersion" parameter should always exist when inserting a row as Init should
             //have been called and membership version created and read. This is an optimization to
@@ -154,31 +86,30 @@ namespace Orleans.Runtime.MembershipService
             //Likewise, no update can be done without membership entry.
             if (entry == null)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.InsertRow aborted due to null check. MembershipEntry is null.");
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.InsertRow aborted due to null check. MembershipEntry is null.");
                 throw new ArgumentNullException("entry");
             }
             if (tableVersion == null)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.InsertRow aborted due to null check. TableVersion is null ");
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.InsertRow aborted due to null check. TableVersion is null ");
                 throw new ArgumentNullException("tableVersion");
             }
 
             try
             {
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.InsertMembershipKey);
-                return database.InsertMembershipRowAsync(query, deploymentId, entry, tableVersion);
+                return await orleansQueries.InsertMembershipRowAsync(this.clusterId, entry, tableVersion.VersionEtag);
             }
             catch(Exception ex)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.InsertRow failed: {0}", ex);
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.InsertRow failed: {0}", ex);
                 throw;
             }            
         }
 
 
-        Task<bool> IMembershipTable.UpdateRow(MembershipEntry entry, string etag, TableVersion tableVersion)
+        public async Task<bool> UpdateRow(MembershipEntry entry, string etag, TableVersion tableVersion)
         {
-            if (logger.IsVerbose3) logger.Verbose3(string.Format("IMembershipTable.UpdateRow called with entry {0}, etag {1} and tableVersion {2}.", entry, etag, tableVersion));
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace(string.Format("IMembershipTable.UpdateRow called with entry {0}, etag {1} and tableVersion {2}.", entry, etag, tableVersion));
 
             //The "tableVersion" parameter should always exist when updating a row as Init should
             //have been called and membership version created and read. This is an optimization to
@@ -187,82 +118,73 @@ namespace Orleans.Runtime.MembershipService
             //Likewise, no update can be done without membership entry or an etag.
             if (entry == null)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.UpdateRow aborted due to null check. MembershipEntry is null.");
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.UpdateRow aborted due to null check. MembershipEntry is null.");
                 throw new ArgumentNullException("entry");
-            }
-            if (etag == null)
-            {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.UpdateRow aborted due to null check. etag is null.");
-                throw new ArgumentNullException("etag");
             }
             if (tableVersion == null)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.UpdateRow aborted due to null check. TableVersion is null ");
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.UpdateRow aborted due to null check. TableVersion is null ");
                 throw new ArgumentNullException("tableVersion");
             }
 
             try
             {
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.UpdateMembershipKey);
-                return database.UpdateMembershipRowAsync(query, deploymentId, etag, entry, tableVersion);                                
+                return await orleansQueries.UpdateMembershipRowAsync(this.clusterId, entry, tableVersion.VersionEtag);                                
             }
             catch(Exception ex)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.UpdateRow failed: {0}", ex);
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.UpdateRow failed: {0}", ex);
                 throw;
             }
         }
 
 
-        Task IMembershipTable.UpdateIAmAlive(MembershipEntry entry)
+        public async Task UpdateIAmAlive(MembershipEntry entry)
         {
-            if(logger.IsVerbose3) logger.Verbose3(string.Format("IMembershipTable.UpdateIAmAlive called with entry {0}.", entry));
+            if(logger.IsEnabled(LogLevel.Trace)) logger.Trace(string.Format("IMembershipTable.UpdateIAmAlive called with entry {0}.", entry));
             if (entry == null)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.UpdateIAmAlive aborted due to null check. MembershipEntry is null.");
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.UpdateIAmAlive aborted due to null check. MembershipEntry is null.");
                 throw new ArgumentNullException("entry");
             }
             try
             {
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.UpdateIAmAlivetimeKey);
-                return database.UpdateIAmAliveTimeAsync(query, deploymentId, entry);
+                await orleansQueries.UpdateIAmAliveTimeAsync(this.clusterId, entry.SiloAddress, entry.IAmAliveTime);
             }
             catch(Exception ex)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.UpdateIAmAlive failed: {0}", ex);
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.UpdateIAmAlive failed: {0}", ex);
                 throw;
             }
         }
 
 
-        Task IMembershipTable.DeleteMembershipTableEntries(string deploymentId)
+        public async Task DeleteMembershipTableEntries(string clusterId)
         {
-            if (logger.IsVerbose3) logger.Verbose3(string.Format("IMembershipTable.DeleteMembershipTableEntries called with deploymentId {0}.", deploymentId));
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace(string.Format("IMembershipTable.DeleteMembershipTableEntries called with clusterId {0}.", clusterId));
             try
             {
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.DeleteMembershipTableEntriesKey);
-                return database.DeleteMembershipTableEntriesAsync(query, deploymentId);
+                await orleansQueries.DeleteMembershipTableEntriesAsync(clusterId);
             }
             catch(Exception ex)
             {
-                if (logger.IsVerbose) logger.Verbose("SqlMembershipTable.DeleteMembershipTableEntries failed: {0}", ex);
+                if (logger.IsEnabled(LogLevel.Debug)) logger.Debug("SqlMembershipTable.DeleteMembershipTableEntries failed: {0}", ex);
                 throw;
             }
         }
                
         
-        private Task<bool> InitTableAsync()
+        private async Task<bool> InitTableAsync()
         {
             try
             {
-                var query = queryConstants.GetConstant(database.InvariantName, QueryKeys.InsertMembershipVersionKey);
-                return database.InsertMembershipVersionRowAsync(query, deploymentId, 0);
+                return await orleansQueries.InsertMembershipVersionRowAsync(this.clusterId);
             }
             catch(Exception ex)
             {
-                if(logger.IsVerbose2) logger.Verbose2("Insert silo membership version failed: {0}", ex.ToString());
+                if(logger.IsEnabled(LogLevel.Trace)) logger.Trace("Insert silo membership version failed: {0}", ex.ToString());
+                throw;
             }
-            return Task.FromResult(false);
         }
     }
 }

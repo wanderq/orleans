@@ -1,33 +1,11 @@
-﻿/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
 using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-
-using Orleans.Runtime;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Orleans.Providers;
+using Orleans.Runtime;
 
 namespace Orleans.Storage
 {
@@ -46,8 +24,7 @@ namespace Orleans.Storage
     /// is bridged over to the appropriate underlying provider for execution.
     /// </para>
     /// <para>
-    /// <see cref="http://en.wikipedia.org/wiki/Jenkins_hash"/> for more information 
-    /// about the Jenkins Hash function.
+    /// See http://en.wikipedia.org/wiki/Jenkins_hash for more information about the Jenkins Hash function.
     /// </para>
     /// </remarks>
     /// <example>
@@ -68,23 +45,13 @@ namespace Orleans.Storage
     public class ShardedStorageProvider : IStorageProvider
     {
         private IStorageProvider[] storageProviders;
-        private static int counter;
-        private readonly int id;
-
-        /// <summary>
-        /// Default constructor.
-        /// </summary>
-        public ShardedStorageProvider()
-        {
-            id = Interlocked.Increment(ref counter);
-        }
-
+        private ILogger logger;
         /// <summary> Name of this storage provider instance. </summary>
-        /// <see cref="IProvider#Name"/>
+        /// <see cref="IProvider.Name"/>
         public string Name { get; private set; }
 
         /// <summary> Logger used by this storage provider instance. </summary>
-        /// <see cref="IStorageProvider#Log"/>
+        /// <see cref="IStorageProvider.Log"/>
         public Logger Log { get; private set; }
 
         /// <summary>
@@ -99,7 +66,7 @@ namespace Orleans.Storage
         }
 
         /// <summary> Initialization function for this storage provider. </summary>
-        /// <see cref="IProvider#Init"/>
+        /// <see cref="IProvider.Init"/>
         public Task Init(string name, IProviderRuntime providerRuntime, IProviderConfiguration config)
         {
             Name = name;
@@ -109,23 +76,25 @@ namespace Orleans.Storage
             if(config.Children.Count == 1)
                 throw new ArgumentException("At least two providers have to be listed.");
 
-            Log = providerRuntime.GetLogger("Storage.ShardedStorageProvider." + id);
+            var loggerName = $"{this.GetType().FullName}.{Name}";
+            var loggerFactory = providerRuntime.ServiceProvider.GetRequiredService<ILoggerFactory>();
+            this.logger = loggerFactory.CreateLogger(loggerName);
+            Log = new LoggerWrapper(logger, loggerName, loggerFactory);
 
             var providers = new List<IStorageProvider>();
             int index = 0;
             foreach( var provider in config.Children)
             {
-                Log.Info((int)ProviderErrorCode.ShardedStorageProvider_ProviderName, "Provider {0} = {1}", index++, provider.Name);
+                logger.Info((int)ProviderErrorCode.ShardedStorageProvider_ProviderName, "Provider {0} = {1}", index++, provider.Name);
                 providers.Add((IStorageProvider)provider);
                 
             }
             storageProviders = providers.ToArray();
             // Storage providers will already have been initialized by the provider manager, so we don't need to orchestrate that
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         /// <summary> Shutdown function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#Close"/>
         public Task Close()
         {
             var closeTasks = new List<Task>();
@@ -136,8 +105,8 @@ namespace Orleans.Storage
         }
 
         /// <summary> Read state data function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#ReadStateAsync"/>
-        public Task ReadStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        /// <see cref="IStorageProvider.ReadStateAsync"/>
+        public Task ReadStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
             int num = FindStorageShard(grainType, grainReference);
             IStorageProvider provider = storageProviders[num];
@@ -145,8 +114,8 @@ namespace Orleans.Storage
         }
 
         /// <summary> Write state data function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#WriteStateAsync"/>
-        public Task WriteStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        /// <see cref="IStorageProvider.WriteStateAsync"/>
+        public Task WriteStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
             int num = FindStorageShard(grainType, grainReference);
             IStorageProvider provider = storageProviders[num];
@@ -154,8 +123,8 @@ namespace Orleans.Storage
         }
 
         /// <summary> Deleet / Clear state data function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#ClearStateAsync"/>
-        public Task ClearStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        /// <see cref="IStorageProvider.ClearStateAsync"/>
+        public Task ClearStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
             int num = FindStorageShard(grainType, grainReference);
             IStorageProvider provider = storageProviders[num];
@@ -168,7 +137,7 @@ namespace Orleans.Storage
             if (num < 0 || num >= storageProviders.Length)
             {
                 var msg = String.Format("Hash function returned out of bounds value {0}. This is an error.", num);
-                Log.Error((int)ProviderErrorCode.ShardedStorageProvider_HashValueOutOfBounds, msg);
+                logger.Error((int)ProviderErrorCode.ShardedStorageProvider_HashValueOutOfBounds, msg);
                 throw new OrleansException(msg);
             }
             return num;

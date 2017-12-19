@@ -1,36 +1,15 @@
-/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-
-using Orleans.Runtime;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Orleans.Providers;
+using Orleans.Runtime;
+using Orleans.Storage.Internal;
 
 namespace Orleans.Storage
 {
@@ -56,53 +35,56 @@ namespace Orleans.Storage
     [DebuggerDisplay("MemoryStore:{Name}")]
     public class MemoryStorage : IStorageProvider
     {
-        private const int DEFAULT_NUM_STORAGE_GRAINS = 10;
-        private const string NUM_STORAGE_GRAINS = "NumStorageGrains";
+        /// <summary>
+        /// Default number of queue storage grains.
+        /// </summary>
+        public const int NumStorageGrainsDefaultValue = 10;
+        /// <summary>
+        /// Config string name for number of queue storage grains.
+        /// </summary>
+        public const string NumStorageGrainsPropertyName = "NumStorageGrains";
         private int numStorageGrains;
-        private static int counter;
-        private readonly int id;
         private const string STATE_STORE_NAME = "MemoryStorage";
-        private string etag;
         private Lazy<IMemoryStorageGrain>[] storageGrains;
-
+        private ILogger logger;
         /// <summary> Name of this storage provider instance. </summary>
-        /// <see cref="IProvider#Name"/>
+        /// <see cref="IProvider.Name"/>
         public string Name { get; private set; }
 
         /// <summary> Logger used by this storage provider instance. </summary>
-        /// <see cref="IStorageProvider#Log"/>
+        /// <see cref="IStorageProvider.Log"/>
         public Logger Log { get; private set; }
 
+        /// <summary> Default constructor. </summary>
         public MemoryStorage()
-            : this(DEFAULT_NUM_STORAGE_GRAINS)
+            : this(NumStorageGrainsDefaultValue)
         {
         }
 
+        /// <summary> Constructor - use the specificed number of store grains. </summary>
+        /// <param name="numStoreGrains">Number of store grains to use.</param>
         protected MemoryStorage(int numStoreGrains)
         {
-            id = Interlocked.Increment(ref counter);
             numStorageGrains = numStoreGrains;
-        }
-
-        protected virtual string GetLoggerName()
-        {
-            return string.Format("Storage.{0}.{1}", GetType().Name, id);
         }
 
         #region IStorageProvider methods
 
         /// <summary> Initialization function for this storage provider. </summary>
-        /// <see cref="IProvider#Init"/>
+        /// <see cref="IProvider.Init"/>
         public virtual Task Init(string name, IProviderRuntime providerRuntime, IProviderConfiguration config)
         {
             Name = name;
-            Log = providerRuntime.GetLogger(GetLoggerName());
+            var loggerName = $"{this.GetType().FullName}.{Name}";
+            var loggerFactory = providerRuntime.ServiceProvider.GetRequiredService<ILoggerFactory>();
+            this.logger = loggerFactory.CreateLogger(loggerName);
+            Log = new LoggerWrapper(logger, loggerName, loggerFactory);
 
             string numStorageGrainsStr;
-            if (config.Properties.TryGetValue(NUM_STORAGE_GRAINS, out numStorageGrainsStr))
+            if (config.Properties.TryGetValue(NumStorageGrainsPropertyName, out numStorageGrainsStr))
                 numStorageGrains = Int32.Parse(numStorageGrainsStr);
             
-            Log.Info("Init: Name={0} NumStorageGrains={1}", Name, numStorageGrains);
+            logger.Info("Init: Name={0} NumStorageGrains={1}", Name, numStorageGrains);
 
             storageGrains = new Lazy<IMemoryStorageGrain>[numStorageGrains];
             for (int i = 0; i < numStorageGrains; i++)
@@ -110,73 +92,71 @@ namespace Orleans.Storage
                 int idx = i; // Capture variable to avoid modified closure error
                 storageGrains[idx] = new Lazy<IMemoryStorageGrain>(() => providerRuntime.GrainFactory.GetGrain<IMemoryStorageGrain>(idx));
             }
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         /// <summary> Shutdown function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#Close"/>
         public virtual Task Close()
         {
             for (int i = 0; i < numStorageGrains; i++)
                 storageGrains[i] = null;
             
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         /// <summary> Read state data function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#ReadStateAsync"/>
-        public virtual async Task ReadStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        /// <see cref="IStorageProvider.ReadStateAsync"/>
+        public virtual async Task ReadStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
-            var keys = MakeKeys(grainType, grainReference);
+            IList<Tuple<string, string>> keys = MakeKeys(grainType, grainReference).ToList();
 
-            if (Log.IsVerbose2) Log.Verbose2("Read Keys={0}", StorageProviderUtils.PrintKeys(keys));
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("Read Keys={0}", StorageProviderUtils.PrintKeys(keys));
             
             string id = HierarchicalKeyStore.MakeStoreKey(keys);
             IMemoryStorageGrain storageGrain = GetStorageGrain(id);
-            IDictionary<string, object> state = await storageGrain.ReadStateAsync(STATE_STORE_NAME, id);
-            if (state != null)
+            var state = await storageGrain.ReadStateAsync(STATE_STORE_NAME, id);
+            if (state != null && state.State != null)
             {
-                grainState.SetAll(state);
+                grainState.ETag = state.ETag;
+                grainState.State = state.State;
             }
         }
 
         /// <summary> Write state data function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#WriteStateAsync"/>
-        public virtual async Task WriteStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        /// <see cref="IStorageProvider.WriteStateAsync"/>
+        public virtual async Task WriteStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
-            var keys = MakeKeys(grainType, grainReference);
-            var data = grainState.AsDictionary();
-            string receivedEtag = grainState.Etag;
-
-            if (Log.IsVerbose2) Log.Verbose2("Write {0} ", StorageProviderUtils.PrintOneWrite(keys, data, receivedEtag));
-
-            if (receivedEtag != null && receivedEtag != etag)
-                throw new InconsistentStateException(string.Format("Etag mismatch durign Write: Expected = {0} Received = {1}", etag, receivedEtag));
-            
+            IList<Tuple<string, string>> keys = MakeKeys(grainType, grainReference).ToList();
             string key = HierarchicalKeyStore.MakeStoreKey(keys);
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("Write {0} ", StorageProviderUtils.PrintOneWrite(keys, grainState.State, grainState.ETag));
             IMemoryStorageGrain storageGrain = GetStorageGrain(key);
-            await storageGrain.WriteStateAsync(STATE_STORE_NAME, key, data);
-
-            etag = NewEtag();
+            try
+            {
+                grainState.ETag = await storageGrain.WriteStateAsync(STATE_STORE_NAME, key, grainState);
+            }
+            catch (MemoryStorageEtagMismatchException e)
+            {
+                throw e.AsInconsistentStateException();
+            }
         }
 
         /// <summary> Delete / Clear state data function for this storage provider. </summary>
-        /// <see cref="IStorageProvider#ClearStateAsync"/>
-        public virtual async Task ClearStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        /// <see cref="IStorageProvider.ClearStateAsync"/>
+        public virtual async Task ClearStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
-            var keys = MakeKeys(grainType, grainReference);
-            string eTag = grainState.Etag; // TOD: Should this be 'null' for always Delete?
-
-            if (Log.IsVerbose2) Log.Verbose2("Delete Keys={0} Etag={1}", StorageProviderUtils.PrintKeys(keys), eTag);
-
-            if (eTag != null && eTag != etag)
-                throw new InconsistentStateException(string.Format("Etag mismatch durign Delete: Expected = {0} Received = {1}", this.etag, eTag));
-            
+            IList<Tuple<string, string>> keys = MakeKeys(grainType, grainReference).ToList();
+            if (logger.IsEnabled(LogLevel.Trace)) logger.Trace("Delete Keys={0} Etag={1}", StorageProviderUtils.PrintKeys(keys), grainState.ETag);
             string key = HierarchicalKeyStore.MakeStoreKey(keys);
             IMemoryStorageGrain storageGrain = GetStorageGrain(key);
-            await storageGrain.DeleteStateAsync(STATE_STORE_NAME, key);
-
-            etag = NewEtag();
+            try
+            {
+                await storageGrain.DeleteStateAsync(STATE_STORE_NAME, key, grainState.ETag);
+                grainState.ETag = null;
+            }
+            catch (MemoryStorageEtagMismatchException e)
+            {
+                throw e.AsInconsistentStateException();
+            }
         }
 
         #endregion
@@ -252,11 +232,6 @@ namespace Orleans.Storage
                 };
             }
             return compareClause;
-        }
-
-        private static string NewEtag()
-        {
-            return DateTime.UtcNow.ToString(CultureInfo.InvariantCulture);
         }
     }
 }

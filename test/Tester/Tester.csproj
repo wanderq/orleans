@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Tester</RootNamespace>
+    <AssemblyName>Tester</AssemblyName>
+    <OrleansBuildTimeCodeGen>true</OrleansBuildTimeCodeGen>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentAssertions" Version="$(FluentAssertionsVersion)" />
+    <PackageReference Include="xunit" Version="$(xUnitVersion)" />
+    <PackageReference Include="Xunit.SkippableFact" Version="$(XunitSkippableFactVersion)" />
+    <DotNetCliToolReference Include="dotnet-xunit" Version="$(xUnitVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Orleans.Core.Abstractions\Orleans.Core.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Azure\Orleans.Persistence.AzureStorage\Orleans.Persistence.AzureStorage.csproj" />
+    <ProjectReference Include="..\..\src\Azure\Orleans.Streaming.AzureStorage\Orleans.Streaming.AzureStorage.csproj" />
+    <ProjectReference Include="..\..\src\Orleans.CodeGeneration\Orleans.CodeGeneration.csproj" />
+    <ProjectReference Include="..\..\src\Orleans.EventSourcing\Orleans.EventSourcing.csproj" />
+    <ProjectReference Include="..\..\src\Orleans.Logging.Legacy\Orleans.Logging.Legacy.csproj" />
+    <ProjectReference Include="..\..\src\Orleans.TestingHost\Orleans.TestingHost.csproj" />
+    <ProjectReference Include="..\TestGrains\TestGrains.csproj" />
+    <ProjectReference Include="..\TestInternalGrains\TestInternalGrains.csproj" />
+    <ProjectReference Include="..\TestExtensions\TestExtensions.csproj" />
+    <ProjectReference Include="..\Versions\TestVersionGrains\TestVersionGrains.csproj" />
+    <ProjectReference Include="..\TestFSharp\TestFSharp.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="App.config" />
+    <None Include="Tester.xunit.runner.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

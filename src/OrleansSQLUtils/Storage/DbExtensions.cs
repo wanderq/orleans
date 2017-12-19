@@ -1,30 +1,11 @@
-﻿/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Data;
+using System.Data.Common;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Reflection;
 
 namespace Orleans.SqlUtils
 {
@@ -83,6 +64,48 @@ namespace Orleans.SqlUtils
 
 
         /// <summary>
+        /// Creates a new SQL parameter using the given arguments.
+        /// </summary>
+        /// <typeparam name="T">The type of the parameter.</typeparam>
+        /// <param name="command">The command to use to create the parameter.</param>
+        /// <param name="direction">The direction of the parameter.</param>
+        /// <param name="parameterName">The name of the parameter.</param>
+        /// <param name="value">The value of the parameter.</param>
+        /// <param name="size">The size of the parameter value.</param>
+        /// <param name="dbType">the <see cref="DbType"/> of the parameter.</param>
+        /// <returns>A parameter created using the given arguments.</returns>
+        public static IDbDataParameter CreateParameter<T>(this IDbCommand command, ParameterDirection direction, string parameterName, T value, int? size = null, DbType? dbType = null)
+        {
+            //There should be no boxing for value types. See at:
+            //http://stackoverflow.com/questions/8823239/comparing-a-generic-against-null-that-could-be-a-value-or-reference-type
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = parameterName;
+            parameter.Value = (object)value ?? DBNull.Value;
+            parameter.DbType = dbType ?? typeMap[typeof(T)];
+            parameter.Direction = direction;
+            if (size != null) { parameter.Size = size.Value; }
+
+            return parameter;
+        }
+
+        /// <summary>
+        /// Creates and adds a new SQL parameter to the command.
+        /// </summary>
+        /// <typeparam name="T">The type of the parameter.</typeparam>
+        /// <param name="command">The command to use to create the parameter.</param>
+        /// <param name="direction">The direction of the parameter.</param>
+        /// <param name="parameterName">The name of the parameter.</param>
+        /// <param name="value">The value of the parameter.</param>
+        /// <param name="size">The size of the parameter value.</param>
+        /// <param name="dbType">the <see cref="DbType"/> of the parameter.</param>
+        /// <returns>A parameter created using the given arguments.</returns>
+        public static void AddParameter<T>(this IDbCommand command, string parameterName, T value, ParameterDirection direction = ParameterDirection.Input, int? size = null, DbType? dbType = null)
+        {
+            command.Parameters.Add(command.CreateParameter(direction, parameterName, value, size));
+        }
+
+
+        /// <summary>
         /// Returns a value if it is not <see cref="System.DBNull"/>, <em>default(TValue)</em> otherwise.
         /// </summary>
         /// <typeparam name="TValue">The type of the value to request.</typeparam>
@@ -90,11 +113,59 @@ namespace Orleans.SqlUtils
         /// <param name="fieldName">The name of the field to retrieve.</param>
         /// <param name="default">The default value if value in position is <see cref="System.DBNull"/>.</param>
         /// <returns>Either the given value or the default for the requested type.</returns>
-        /// <exception cref="IndexOutOfRangeException"/>
+        /// <exception cref="DataException"/>
         /// <remarks>This function throws if the given <see paramref="fieldName"/> does not exist.</remarks>
         public static TValue GetValueOrDefault<TValue>(this IDataRecord record, string fieldName, TValue @default = default(TValue))
         {
-            var ordinal = record.GetOrdinal(fieldName);
+
+            try
+            {
+                var ordinal = record.GetOrdinal(fieldName);
+                return record.IsDBNull(ordinal) ? @default : (TValue)record.GetValue(ordinal);
+            }
+            catch (IndexOutOfRangeException e)
+            {
+                throw new DataException($"Field '{fieldName}' not found in data record.", e);
+            }
+        }
+
+        /// <summary>
+        /// Returns a value if it is not <see cref="System.DBNull"/>, <em>default(TValue)</em> otherwise.
+        /// </summary>
+        /// <typeparam name="TValue">The type of the value to request.</typeparam>
+        /// <param name="record">The record from which to retrieve the value.</param>
+        /// <param name="fieldName">The name of the field to retrieve.</param>
+        /// <param name="default">The default value if value in position is <see cref="System.DBNull"/>.</param>
+        /// <returns>Either the given value or the default for the requested type.</returns>
+        /// <exception cref="DataException"/>
+        /// <remarks>This function throws if the given <see paramref="fieldName"/> does not exist.</remarks>
+        public static async Task<TValue> GetValueOrDefaultAsync<TValue>(this DbDataReader record, string fieldName, TValue @default = default(TValue))
+        {
+            try
+            {
+                var ordinal = record.GetOrdinal(fieldName);
+                return (await record.IsDBNullAsync(ordinal).ConfigureAwait(false))
+                    ? @default
+                    : (await record.GetFieldValueAsync<TValue>(ordinal).ConfigureAwait(false));
+            }
+            catch (IndexOutOfRangeException e)
+            {
+                throw new DataException($"Field '{fieldName}' not found in data record.", e);
+            }
+        }
+
+
+        /// <summary>
+        /// Returns a value if it is not <see cref="System.DBNull"/>, <em>default(TValue)</em> otherwise.
+        /// </summary>
+        /// <typeparam name="TValue">The type of the value to request.</typeparam>
+        /// <param name="record">The record from which to retrieve the value.</param>
+        /// <param name="ordinal">The ordinal of the fieldname.</param>
+        /// <param name="default">The default value if value in position is <see cref="System.DBNull"/>.</param>
+        /// <returns>Either the given value or the default for the requested type.</returns>
+        /// <exception cref="IndexOutOfRangeException"/>                
+        public static TValue GetValueOrDefault<TValue>(this IDataRecord record, int ordinal, TValue @default = default(TValue))
+        {
             return record.IsDBNull(ordinal) ? @default : (TValue)record.GetValue(ordinal);
         }
 
@@ -107,11 +178,11 @@ namespace Orleans.SqlUtils
         /// <param name="ordinal">The ordinal of the fieldname.</param>
         /// <param name="default">The default value if value in position is <see cref="System.DBNull"/>.</param>
         /// <returns>Either the given value or the default for the requested type.</returns>
-        /// <exception cref="IndexOutOfRangeException"/>
-        /// <remarks>This function throws if the given <see paramref="fieldName"/> does not exist.</remarks>        
-        public static TValue GetValueOrDefault<TValue>(this IDataRecord record, int ordinal, TValue @default = default(TValue))
+        /// <exception cref="IndexOutOfRangeException"/>                
+        public static async Task<TValue> GetValueOrDefaultAsync<TValue>(this DbDataReader record, int ordinal, TValue @default = default(TValue))
         {
-            return record.IsDBNull(ordinal) ? @default : (TValue)record.GetValue(ordinal);
+
+            return (await record.IsDBNullAsync(ordinal).ConfigureAwait(false)) ? @default : (await record.GetFieldValueAsync<TValue>(ordinal).ConfigureAwait(false));
         }
 
 
@@ -122,14 +193,89 @@ namespace Orleans.SqlUtils
         /// <param name="record">The record from which to retrieve the value.</param>
         /// <param name="fieldName">The name of the field.</param>
         /// <returns>Value in the given field indicated by <see paramref="fieldName"/>.</returns>
-        /// <exception cref="IndexOutOfRangeException"/>
+        /// <exception cref="DataException"/>
         /// <remarks>This function throws if the given <see paramref="fieldName"/> does not exist.</remarks>        
         public static TValue GetValue<TValue>(this IDataRecord record, string fieldName)
         {
-            var ordinal = record.GetOrdinal(fieldName);
-            return (TValue)record.GetValue(ordinal);
-        }        
-        
+            try
+            {
+                var ordinal = record.GetOrdinal(fieldName);
+                return (TValue)record.GetValue(ordinal);
+            }
+            catch (IndexOutOfRangeException e)
+            {
+                throw new DataException($"Field '{fieldName}' not found in data record.", e);
+            }
+        }
+
+
+        /// <summary>
+        /// Returns a value with the given <see paramref="fieldName"/> as int.
+        /// </summary>
+        /// <param name="record">The record from which to retrieve the value.</param>
+        /// <param name="fieldName">The name of the field.</param>
+        /// <exception cref="DataException"/>
+        /// <returns>Integer value in the given field indicated by <see paramref="fieldName"/>.</returns>
+        public static int GetInt32(this IDataRecord record, string fieldName)
+        {
+            try
+            {
+                var ordinal = record.GetOrdinal(fieldName);
+                return record.GetInt32(ordinal);
+            }
+            catch (IndexOutOfRangeException e)
+            {
+                throw new DataException($"Field '{fieldName}' not found in data record.", e);
+            }
+        }
+
+        /// <summary>
+        /// Returns a value with the given <see paramref="fieldName"/> as nullable int.
+        /// </summary>
+        /// <param name="record">The record from which to retrieve the value.</param>
+        /// <param name="fieldName">The name of the field.</param>
+        /// <exception cref="DataException"/>
+        /// <returns>Nullable int value in the given field indicated by <see paramref="fieldName"/>.</returns>
+        public static int? GetNullableInt32(this IDataRecord record, string fieldName)
+        {
+            try
+            {
+                var ordinal = record.GetOrdinal(fieldName);
+                var value = record.GetValue(ordinal);
+                if (value == DBNull.Value)
+                    return null;
+
+                return Convert.ToInt32(value);
+            }
+            catch (IndexOutOfRangeException e)
+            {
+                throw new DataException($"Field '{fieldName}' not found in data record.", e);
+            }
+        }
+
+        /// <summary>
+        /// Returns a value with the given <see paramref="fieldName"/>.
+        /// </summary>
+        /// <typeparam name="TValue">The type of value to retrieve.</typeparam>
+        /// <param name="record">The record from which to retrieve the value.</param>
+        /// <param name="fieldName">The name of the field.</param>
+        /// <param name="cancellationToken">The cancellation token. Defaults to <see cref="CancellationToken.None"/>.</param>
+        /// <returns>Value in the given field indicated by <see paramref="fieldName"/>.</returns>
+        /// <exception cref="DataException"/>
+        /// <remarks>This function throws if the given <see paramref="fieldName"/> does not exist.</remarks>        
+        public static async Task<TValue> GetValueAsync<TValue>(this DbDataReader record, string fieldName, CancellationToken cancellationToken = default(CancellationToken))
+        {
+            try
+            {
+                var ordinal = record.GetOrdinal(fieldName);
+                return await record.GetFieldValueAsync<TValue>(ordinal, cancellationToken).ConfigureAwait(false);
+            }
+            catch (IndexOutOfRangeException e)
+            {
+                throw new DataException($"Field '{fieldName}' not found in data record.", e);
+            }
+        }
+
 
 
         /// <summary>
@@ -142,10 +288,10 @@ namespace Orleans.SqlUtils
         /// <remarks>Does not support collection parameters currently. Does not cache reflection results.</remarks>
         public static void ReflectionParameterProvider<T>(this IDbCommand command, T parameters, IReadOnlyDictionary<string, string> nameMap = null)
         {
-            if(!EqualityComparer<T>.Default.Equals(parameters, default(T)))
+            if (!EqualityComparer<T>.Default.Equals(parameters, default(T)))
             {
-                var properties = parameters.GetType().GetProperties();
-                for(int i = 0; i < properties.Length; ++i)
+                var properties = parameters.GetType().GetTypeInfo().GetProperties();
+                for (int i = 0; i < properties.Length; ++i)
                 {
                     var property = properties[i];
                     var value = property.GetValue(parameters, null);
@@ -175,10 +321,10 @@ namespace Orleans.SqlUtils
             //get garbage collected. Consequently the original struct value would not be set.            
             object obj = Activator.CreateInstance<TResult>();
             var properties = obj.GetType().GetProperties();
-            for(int i = 0; i < properties.Length; ++i)
+            for (int i = 0; i < properties.Length; ++i)
             {
                 var rp = record[properties[i].Name];
-                if(!Equals(rp, DBNull.Value))
+                if (!Equals(rp, DBNull.Value))
                 {
                     properties[i].SetValue(obj, rp, null);
                 }

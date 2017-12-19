@@ -1,34 +1,33 @@
-Orleans - Distributed Actor Model
-=======
+<p align="center">
+  <img src="https://github.com/dotnet/orleans/blob/gh-pages/assets/logo_full.png" alt="Orleans logo" width="600px"> 
+</p>
 
-![Orleans logo](https://github.com/dotnet/orleans/blob/gh-pages/Icons/Orleans/OrleansSDK_128x.png)
-
-
-[![Build status](http://dotnet-ci.cloudapp.net/job/dotnet_orleans/job/innerloop/badge/icon)](http://dotnet-ci.cloudapp.net/job/dotnet_orleans/job/innerloop)
+[![Build status](https://ci.dot.net/job/dotnet_orleans/job/master/job/netfx-bvt/badge/icon)](http://ci.dot.net/job/dotnet_orleans/job/master/)
 [![NuGet](https://img.shields.io/nuget/v/Microsoft.Orleans.Core.svg?style=flat)](http://www.nuget.org/profiles/Orleans)
-[![Issue Stats](http://www.issuestats.com/github/dotnet/orleans/badge/pr)](http://www.issuestats.com/github/dotnet/orleans)
-[![Issue Stats](http://www.issuestats.com/github/dotnet/orleans/badge/issue)](http://www.issuestats.com/github/dotnet/orleans)
-
 [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/dotnet/orleans?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
-
-[![Help Wanted Issues](https://badge.waffle.io/dotnet/orleans.svg?label=help%20wanted&title=Help Wanted Issues)](http://waffle.io/dotnet/orleans)
+[![Help Wanted Issues](https://badge.waffle.io/dotnet/orleans.svg?label=up-for-grabs&title=Help%20Wanted%20Issues)](http://waffle.io/dotnet/orleans)
 
 Orleans is a framework that provides a straight-forward approach to building distributed high-scale computing applications, without the need to learn and apply complex concurrency or other scaling patterns. 
-It was created by [Microsoft Research][MSR-ProjectOrleans] and designed for use in the cloud. 
-Orleans has been used extensively running in Microsoft Azure by several Microsoft product groups, most notably by 343 Industries as a platform for all of Halo 4 cloud services, as well as by [a number of other projects and companies](http://dotnet.github.io/orleans/Who-Is-Using-Orleans).
+
+It was created by [Microsoft Research](http://research.microsoft.com/projects/orleans/) 
+implementing the [Virtual Actor Model](http://research.microsoft.com/apps/pubs/default.aspx?id=210931) 
+and designed for use in the cloud. 
+
+Orleans has been used extensively running in Microsoft Azure by several Microsoft product groups, most notably by [343 Industries](https://www.halowaypoint.com/) as a platform for all of Halo 4 and Halo 5 cloud services, as well as by [a number of other projects and companies](http://dotnet.github.io/orleans/Community/Who-Is-Using-Orleans.html).
 
 Installation
-=======
+============
 
-Installation is performed via NuGet. There are several packages, one for each different project type (interfaces, grains, silo, and client).
+Installation is performed via [NuGet](https://www.nuget.org/packages?q=orleans). 
+There are several packages, one for each different project type (interfaces, grains, silo, and client).
 
 In the grain interfaces project:
 ```
-PM> Install-Package Microsoft.Orleans.Templates.Interfaces
+PM> Install-Package Microsoft.Orleans.OrleansCodeGenerator.Build
 ```
 In the grain implementations project:
 ```
-PM> Install-Package Microsoft.Orleans.Templates.Grains
+PM> Install-Package Microsoft.Orleans.OrleansCodeGenerator.Build
 ```
 In the server (silo) project:
 ```
@@ -40,21 +39,38 @@ PM> Install-Package Microsoft.Orleans.Client
 ```
 
 ### Official Builds
+
 The stable production-quality release is located [here](https://github.com/dotnet/orleans/releases/latest).
 
-The latest clean development branch build from CI is located: [here](http://dotnet-ci.cloudapp.net/job/dotnet_orleans/job/innerloop/lastStableBuild/artifact/)
+The latest clean development branch build from CI is located: [here](https://ci.dot.net/job/dotnet_orleans/job/master/job/netfx-bvt/lastStableBuild/artifact/)
 
-### Building From Source
-Clone the sources and run the `Build.cmd` script to build the binaries locally.
+Nightly builds are published to https://dotnet.myget.org/gallery/orleans-ci . These builds pass all functional tests, but are not thoroughly tested as the stable builds or pre-release builds we push to NuGet.org
 
-Then reference the required assemblies from `Binaries\Release\*` or the NuGet packages from `Binaries\NuGet.Packages\*`.
+### Building from source
 
-Documentation 
-=======
-Documentation is located [here][Orleans Documentation]
+Clone the sources from the GitHub [repo](https://github.com/dotnet/orleans) 
 
-Example
-=======
+Run the `Build.cmd` script to build the nuget packages locally,
+then reference the required NuGet packages from `/Artifacts/Release/*`.
+You can run `Test.cmd` to run all BVT tests, and `TestAll.cmd` to also run Functional tests (which take much longer)
+
+### Building and running tests in Visual Studio 2017
+.NET Core 2.0 SDK is a pre-requisite to build Orleans.sln.
+
+There might be errors trying to build from Visual Studio because of conflicts with the test discovery engine (error says could not copy `xunit.abstractions.dll`).
+The reason for that error is that you need to configure the test runner in VS like so (after opening the solution):
+* `Test` -> `Test Settings` -> Uncheck `Keep Test Execution Engine running`
+* `Test` -> `Test Settings` -> `Default Processor Architecture` -> Check `X64`
+
+Then either restart VS, or go to the task manager and kill the processes that starts with `vstest.`. Then build once again and it should succeed and tests should appear in the `Test Explorer` window.
+
+Documentation
+=============
+
+Documentation is located [here](http://dotnet.github.io/orleans/)
+
+Code Examples
+=============
 
 Create an interface for your grain:
 ```c#
@@ -80,34 +96,41 @@ Call the grain from your Web service (or anywhere else):
 // Get a reference to the IHello grain with id '0'.
 var friend = GrainClient.GrainFactory.GetGrain<IHello>(0);
 
-// Send a greeting to the grain an await the response.
+// Send a greeting to the grain and await the response.
 Console.WriteLine(await friend.SayHello("Good morning, my friend!"));
 ```
 
-Contributing To This Project
-=======
+Blog
+=========
+[Orleans Blog](https://blogs.msdn.microsoft.com/orleans/) is a place to share our thoughts, plans, learnings, tips and tricks, and ideas, crazy and otherwise, which don’t easily fit the documentation format. We would also like to see here posts from the community members, sharing their experiences, ideas, and wisdom. 
+So, welcome to Orleans Blog, both as a reader and as a blogger!
 
-* List of [Ideas for Contributions]
+Community
+=========
 
-* [Contributing Guide]
+* Ask questions by [opening an issue on GitHub](https://github.com/dotnet/orleans/issues) or on [Stack Overflow](https://stackoverflow.com/questions/ask?tags=orleans)
 
-* [CLA - Contribution License Agreement][CLA]
+* [Chat on Gitter](https://gitter.im/dotnet/orleans)
 
-* The coding standards / style guide used for Orleans code is the [.NET Framework Design Guidelines][DotNet Framework Design Guidelines]
+* Follow the [@MSFTOrleans](https://twitter.com/MSFTOrleans) Twitter account for Orleans announcements.
 
-* [Orleans Community - Repository of community add-ons to Orleans](https://github.com/OrleansContrib/) Various community projects, including Orleans Monitoring, Design Patterns, Storage Provider, etc.
+* [OrleansContrib - Repository of community add-ons to Orleans](https://github.com/OrleansContrib/) Various community projects, including Orleans Monitoring, Design Patterns, Storage Provider, etc.
 
-You are also encouraged to start a discussion by filing an issue.
+* Guidelines for developers wanting to [contribute code changes to Orleans](http://dotnet.github.io/orleans/Community/Contributing.html).
+
+* You are also encouraged to report bugs or start a technical discussion by starting a new [thread](https://github.com/dotnet/orleans/issues) on GitHub.
 
 License
 =======
 This project is licensed under the [MIT license](https://github.com/dotnet/orleans/blob/master/LICENSE).
 
+Quick Links
+===========
 
-[MSR-ProjectOrleans]: http://research.microsoft.com/projects/orleans/
-[Orleans Documentation]: http://dotnet.github.io/orleans/
-[Ideas for Contributions]: http://dotnet.github.io/orleans/Ideas-for-Contributions
-[Contributing Guide]: https://github.com/dotnet/corefx/wiki/Contributing
-[CLA]: https://github.com/dotnet/corefx/wiki/Contribution-License-Agreement-%28CLA%29
-[DotNet Framework Design Guidelines]: https://github.com/dotnet/corefx/wiki/Framework-Design-Guidelines-Digest
-[Download Link]: http://orleans.codeplex.com/releases/view/144111
+* [MSR-ProjectOrleans](http://research.microsoft.com/projects/orleans/)
+* Orleans Tech Report - [Distributed Virtual Actors for Programmability and Scalability](http://research.microsoft.com/apps/pubs/default.aspx?id=210931)
+* [Orleans-GitHub](https://github.com/dotnet/orleans)
+* [Orleans Documentation](http://dotnet.github.io/orleans/)
+* [Contributing](http://dotnet.github.io/orleans/Community/Contributing.html)
+
+This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
