@@ -2,10 +2,11 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Orleans.Threading;
 
 namespace Orleans.Runtime
 {
-    internal abstract class AsynchAgent<TExecutor> : IHealthCheckable, IDisposable where TExecutor : IExecutor
+    internal abstract class AsynchAgent : IHealthCheckable, IDisposable
     {
         public enum FaultBehavior
         {
@@ -15,17 +16,14 @@ namespace Orleans.Runtime
         }
 
         protected readonly ExecutorService executorService;
-        protected TExecutor executor;
+        protected ThreadPoolExecutor executor;
         protected CancellationTokenSource Cts;
         protected object Lockable;
         protected ILogger Log;
+        protected ILoggerFactory loggerFactory;
         protected readonly string type;
         protected FaultBehavior OnFault;
         protected bool disposed;
-
-#if TRACK_DETAILED_STATS
-        internal protected ThreadTrackingStatistic threadTracking;
-#endif
 
         public ThreadState State { get; protected set; }
 
@@ -53,17 +51,12 @@ namespace Orleans.Runtime
             Lockable = new object();
             State = ThreadState.Unstarted;
             OnFault = FaultBehavior.IgnoreFault;
-            Log = loggerFactory.CreateLogger(Name);
 
+            this.loggerFactory = loggerFactory;
+            this.Log = loggerFactory.CreateLogger(Name);
             this.executorService = executorService;
-            AppDomain.CurrentDomain.DomainUnload += CurrentDomain_DomainUnload;
 
-#if TRACK_DETAILED_STATS
-            if (StatisticsCollector.CollectThreadTimeTrackingStats)
-            {
-                threadTracking = new ThreadTrackingStatistic(Name);
-            }
-#endif
+            AppDomain.CurrentDomain.DomainUnload += CurrentDomain_DomainUnload;
         }
 
         protected AsynchAgent(ExecutorService executorService, ILoggerFactory loggerFactory)
@@ -125,7 +118,7 @@ namespace Orleans.Runtime
                     {
                         State = ThreadState.StopRequested;
                         Cts.Cancel();
-                        executor = default(TExecutor);
+                        executor = null;
                         State = ThreadState.Stopped;
                     }
                 }
@@ -175,7 +168,8 @@ namespace Orleans.Runtime
 
         internal static bool IsStarting { get; set; }
 
-        protected abstract ExecutorOptions ExecutorOptions { get; }
+        protected virtual ThreadPoolExecutorOptions.Builder ExecutorOptionsBuilder =>
+            new ThreadPoolExecutorOptions.Builder(Name, GetType(), Cts, loggerFactory, ExecutorFaultHandler);
 
         protected void ExecutorFaultHandler(Exception ex, string executorExplanation)
         {
@@ -200,7 +194,7 @@ namespace Orleans.Runtime
         {
             if (executor == null)
             {
-                executor = executorService.GetExecutor<TExecutor>(ExecutorOptions);
+                executor = executorService.GetExecutor(ExecutorOptionsBuilder.Options);
             }
         }
 
